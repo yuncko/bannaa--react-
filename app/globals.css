@@ -1,0 +1,114 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-bg: #0a0a0b;
+  --color-bg-elevated: #131315;
+  --color-bg-panel: #18181b;
+  --color-bg-panel-soft: #1f1f23;
+  --color-border-subtle: rgba(255, 255, 255, 0.08);
+  --color-border-strong: rgba(255, 255, 255, 0.16);
+  --color-ink: #f2f1ee;
+  --color-ink-muted: #a5a39c;
+  --color-ink-faint: #6b6963;
+  --color-accent: #d97757;
+  --color-accent-soft: #e8a06e;
+  --color-accent-deep: #b85c3f;
+  --font-arabic: "IBM Plex Sans Arabic", "Segoe UI", Tahoma, sans-serif;
+  --font-code: "JetBrains Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+
+* {
+  border-color: var(--color-border-subtle);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  background:
+    radial-gradient(ellipse 900px 500px at 15% -10%, rgba(217, 119, 87, 0.16), transparent 60%),
+    radial-gradient(ellipse 700px 500px at 100% 10%, rgba(217, 119, 87, 0.08), transparent 55%),
+    var(--color-bg);
+  color: var(--color-ink);
+  font-family: var(--font-arabic);
+  min-height: 100dvh;
+}
+
+::selection {
+  background: rgba(217, 119, 87, 0.35);
+  color: #fff;
+}
+
+/* Scrollbars */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.22);
+  background-clip: content-box;
+}
+
+/* Animations */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.animate-fade-up {
+  animation: fade-up 0.45s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@keyframes soft-pulse {
+  0%, 100% { opacity: 0.55; }
+  50% { opacity: 1; }
+}
+.animate-soft-pulse {
+  animation: soft-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes glow-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(-2%, 3%) scale(1.05); }
+}
+.animate-glow-drift {
+  animation: glow-drift 12s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0% { background-position: -400px 0; }
+  100% { background-position: 400px 0; }
+}
+.animate-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 0%,
+    rgba(255, 255, 255, 0.09) 20%,
+    rgba(255, 255, 255, 0.03) 40%
+  );
+  background-size: 800px 100%;
+  animation: shimmer 1.6s linear infinite;
+}
+
+.font-code {
+  font-family: var(--font-code);
+}
+
+.dir-ltr {
+  direction: ltr;
+}
