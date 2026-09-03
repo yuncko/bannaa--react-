@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ArrowForwardIcon, LogoMark, SparkleIcon } from "./Icons";
-import { MODEL_INFO } from "@/lib/omnirouter";
+import { MODEL_INFO } from "@/lib/models";
 
 const EXAMPLES = [
   "صفحة هبوط أنيقة لمقهى اختصاصي يقدّم قهوة مختصة",

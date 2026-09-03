@@ -1,27 +1,48 @@
+// Importing this module from a Client Component is a build error. That guarantee
+// is what keeps the API keys below out of the browser bundle. UI-facing model
+// metadata lives in `lib/models.ts`, which is safe to import anywhere.
+import "server-only";
+
 import type { ReactProject } from "./types";
+import { MODELS, isKnownModel } from "./models";
 
-const BASE_URL = "https://omnirouter.li/v1";
+const BASE_URL = process.env.OMNIROUTER_BASE_URL || "https://omnirouter.li/v1";
 
-// Ordered failover keys — if one fails (network, quota, auth), the next is tried.
-const API_KEYS = [
-  process.env.OMNIROUTER_API_KEY_1 ||
-    "sk_live_O-7x7pVslijRRiuypDqxj15u5C20584ifibix-2Bgec",
-  process.env.OMNIROUTER_API_KEY_2 ||
-    "sk_live_DbBeZfjwdES_5n_VXUDFeru21eWZZtyzw5qOIxXx_rs",
-  process.env.OMNIROUTER_API_KEY_3 ||
-    "sk_live_qjibmoksE9l-u9vrtGKR8lQ25kHCrG7Liv_FTTbCsLU",
-].filter(Boolean);
+/**
+ * Ordered failover keys — if one fails (network, quota, auth), the next is tried.
+ *
+ * Read from the environment on every access rather than captured at module load,
+ * so a rotated key takes effect without a rebuild. There are deliberately no
+ * hardcoded fallbacks: a leaked repository must not carry working credentials.
+ */
+function loadApiKeys(): string[] {
+  return [
+    process.env.OMNIROUTER_API_KEY_1,
+    process.env.OMNIROUTER_API_KEY_2,
+    process.env.OMNIROUTER_API_KEY_3,
+  ]
+    .map((key) => key?.trim())
+    .filter((key): key is string => Boolean(key));
+}
 
-// Ordered failover models.
-export const MODELS = ["claude-sonnet-5", "claude-sonnet-4-6", "gpt-5-6-luna", "gpt-5-6-terra"];
+/** Stable, non-reversible label for logs so keys are never written to stdout. */
+function keyLabel(index: number, key: string): string {
+  return `key_${index + 1}(len=${key.length})`;
+}
 
-// Model display names and descriptions for UI
-export const MODEL_INFO = [
-  { id: "claude-sonnet-5", name: "Claude Sonnet 5", description: "الأسرع والأكثر استقراراً (موصى به)" },
-  { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", description: "متوازن وموثوق" },
-  { id: "gpt-5-6-luna", name: "GPT-5.6 Luna", description: "إبداعي (قد يكون أبطأ)" },
-  { id: "gpt-5-6-terra", name: "GPT-5.6 Terra", description: "دقيق ومفصّل" },
-] as const;
+/**
+ * Strips anything that looks like a provider credential out of text that may be
+ * logged or returned to the client — provider error bodies sometimes echo the
+ * Authorization header back.
+ */
+export function redactSecrets(text: string): string {
+  let safe = text.replace(/sk[-_][A-Za-z0-9_-]{8,}/g, "[REDACTED_KEY]");
+  safe = safe.replace(/(Bearer)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [REDACTED_KEY]");
+  for (const key of loadApiKeys()) {
+    safe = safe.split(key).join("[REDACTED_KEY]");
+  }
+  return safe;
+}
 
 export const SYSTEM_INSTRUCTION = `You are "بنّاء" (Bannaa), a world-class Senior React & TypeScript Architect and Award-Winning Product Designer, on par with the design teams at Linear, Vercel, Stripe, and Apple. You are obsessed with restraint, clarity, and craft — not decoration.
 
@@ -154,7 +175,9 @@ async function callOnce(key: string, model: string, userInput: string): Promise<
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
-      throw new Error(`HTTP ${res.status} from ${model}: ${body.slice(0, 300)}`);
+      throw new Error(
+        `HTTP ${res.status} from ${model}: ${redactSecrets(body).slice(0, 300)}`
+      );
     }
 
     const data = (await res.json()) as ChatCompletionResponse;
@@ -184,21 +207,28 @@ function isRetryable(err: unknown): boolean {
  * Throws the last error if every combination fails.
  */
 export async function generateRawOutput(userInput: string, primaryModel?: string): Promise<string> {
-  if (API_KEYS.length === 0) {
-    throw new Error("MISSING_API_KEY: لا توجد مفاتيح API للمزوّد");
+  const apiKeys = loadApiKeys();
+
+  if (apiKeys.length === 0) {
+    throw new Error(
+      "MISSING_API_KEY: لا توجد مفاتيح API للمزوّد. أضف OMNIROUTER_API_KEY_1..3 إلى متغيّرات البيئة."
+    );
   }
 
   let lastError: unknown = new Error("No attempts made");
 
   // If user selected a specific model, try it with all keys first
-  if (primaryModel && MODELS.includes(primaryModel)) {
-    for (const key of API_KEYS) {
+  if (primaryModel && isKnownModel(primaryModel)) {
+    for (const [index, key] of apiKeys.entries()) {
       try {
         return await callOnce(key, primaryModel, userInput);
       } catch (err) {
         lastError = err;
         if (!isRetryable(err)) throw err;
-        console.error(`[omnirouter] ${primaryModel} with key failed, trying next key:`, err);
+        console.error(
+          `[omnirouter] ${primaryModel} with ${keyLabel(index, key)} failed, trying next key:`,
+          redactSecrets(err instanceof Error ? err.message : String(err))
+        );
       }
     }
     // If primary model failed with all keys, fall back to other models
@@ -206,15 +236,20 @@ export async function generateRawOutput(userInput: string, primaryModel?: string
   }
 
   // Fallback: try all models in order
-  const fallbackModels = primaryModel ? MODELS.filter(m => m !== primaryModel) : MODELS;
+  const fallbackModels = primaryModel
+    ? MODELS.filter((m) => m !== primaryModel)
+    : [...MODELS];
   for (const model of fallbackModels) {
-    for (const key of API_KEYS) {
+    for (const [index, key] of apiKeys.entries()) {
       try {
         return await callOnce(key, model, userInput);
       } catch (err) {
         lastError = err;
         if (!isRetryable(err)) throw err;
-        console.error(`[omnirouter] ${model} failed, trying next:`, err);
+        console.error(
+          `[omnirouter] ${model} with ${keyLabel(index, key)} failed, trying next:`,
+          redactSecrets(err instanceof Error ? err.message : String(err))
+        );
       }
     }
   }

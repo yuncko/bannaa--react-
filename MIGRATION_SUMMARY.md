@@ -8,12 +8,15 @@ The app now uses **Omnirouter** (https://omnirouter.li/v1) instead of Google Gem
 
 **File:** `lib/omnirouter.ts` (replaced `lib/gemini.ts`)
 
-- **Base URL:** `https://omnirouter.li/v1`
+- **Base URL:** `https://omnirouter.li/v1` (override with `OMNIROUTER_BASE_URL`)
 - **API Format:** OpenAI Chat Completions (`/chat/completions`)
-- **API Keys:** 3 keys with automatic failover
-  1. `sk_live_O-7x7pVslijRRiuypDqxj15u5C20584ifibix-2Bgec`
-  2. `sk_live_DbBeZfjwdES_5n_VXUDFeru21eWZZtyzw5qOIxXx_rs`
-  3. `sk_live_qjibmoksE9l-u9vrtGKR8lQ25kHCrG7Liv_FTTbCsLU`
+- **API Keys:** 3 keys with automatic failover, read only from the environment
+  1. `OMNIROUTER_API_KEY_1`
+  2. `OMNIROUTER_API_KEY_2`
+  3. `OMNIROUTER_API_KEY_3`
+
+  Key values live in `.env.local` (git-ignored) and in the hosting provider's
+  environment settings. They are never committed and never hardcoded in source.
 
 - **Models:** Ordered failover across 4 models
   1. `claude-sonnet-5` (200k context)
@@ -41,15 +44,20 @@ The provider tries every **key × model** combination (3 × 4 = 12 attempts tota
    - Removed template support (reverted to original interface)
    - Added Arabic error messages for auth/quota/network failures
 
-3. **`.env.local`** — Created with optional env var overrides
+3. **`.env.local`** — Holds the provider keys (git-ignored, required)
    ```
-   OMNIROUTER_API_KEY_1=sk_live_O-7x7pVslijRRiuypDqxj15u5C20584ifibix-2Bgec
-   OMNIROUTER_API_KEY_2=sk_live_DbBeZfjwdES_5n_VXUDFeru21eWZZtyzw5qOIxXx_rs
-   OMNIROUTER_API_KEY_3=sk_live_qjibmoksE9l-u9vrtGKR8lQ25kHCrG7Liv_FTTbCsLU
+   OMNIROUTER_API_KEY_1=your_first_key
+   OMNIROUTER_API_KEY_2=your_second_key
+   OMNIROUTER_API_KEY_3=your_third_key
    ```
-   (Keys are also hardcoded as fallback in `omnirouter.ts`)
+   There is **no hardcoded fallback**. If none of these are set, `/api/generate`
+   returns a setup error instead of silently using a committed key.
 
-4. **`lib/gemini.ts`** — Deleted (no longer used)
+4. **`lib/models.ts`** — Client-safe model metadata (`MODELS`, `MODEL_INFO`)
+   - `lib/omnirouter.ts` is marked `server-only`, so importing it from a client
+     component is a build error. The model picker imports `lib/models.ts` instead.
+
+5. **`lib/gemini.ts`** — Deleted (no longer used)
 
 ### UI Preserved
 

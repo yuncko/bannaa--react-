@@ -43,10 +43,14 @@
 npm install
 ```
 
-2. تأكد من وجود مفتاح Gemini API في `.env.local`:
+2. أنشئ ملف `.env.local` (انسخه من `.env.example`) وضع فيه مفاتيح Omnirouter:
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
+OMNIROUTER_API_KEY_1=your_first_key
+OMNIROUTER_API_KEY_2=your_second_key
+OMNIROUTER_API_KEY_3=your_third_key
 ```
+> المفاتيح تُقرأ من متغيّرات البيئة على الخادم فقط، ولا تُضمَّن في كود المتصفح.
+> ملف `.env.local` مستثنى من Git ولا يجب رفعه أبدًا.
 
 3. تشغيل خادم التطوير:
 ```bash

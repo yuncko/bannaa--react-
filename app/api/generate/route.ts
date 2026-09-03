@@ -3,6 +3,7 @@ import {
   buildUserInput,
   extractReactProject,
   generateRawOutput,
+  redactSecrets,
 } from "@/lib/omnirouter";
 import type { ReactProject } from "@/lib/types";
 
@@ -70,9 +71,22 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ project });
   } catch (err) {
-    console.error("[/api/generate] error:", err);
+    const rawMessage = err instanceof Error ? err.message : String(err);
+    // Provider error bodies can echo the Authorization header, so scrub before
+    // anything reaches the server log or the client.
+    const message = redactSecrets(rawMessage);
 
-    const message = err instanceof Error ? err.message : String(err);
+    console.error("[/api/generate] error:", message);
+
+    if (/MISSING_API_KEY/.test(message)) {
+      return NextResponse.json(
+        {
+          error:
+            "لم يتم إعداد مفاتيح API للمزوّد على الخادم. أضف OMNIROUTER_API_KEY_1..3 إلى متغيّرات البيئة.",
+        },
+        { status: 500 }
+      );
+    }
 
     if (/HTTP 401|api key|unauthenticated|forbidden|permission/i.test(message)) {
       return NextResponse.json(
