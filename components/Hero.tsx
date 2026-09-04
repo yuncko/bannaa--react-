@@ -2,7 +2,9 @@
 
 import { useState } from "react";
 import { ArrowForwardIcon, LogoMark, SparkleIcon } from "./Icons";
+import UserMenu from "./auth/UserMenu";
 import { MODEL_INFO } from "@/lib/models";
+import type { AuthUser } from "@/lib/auth-user";
 
 const EXAMPLES = [
   "صفحة هبوط أنيقة لمقهى اختصاصي يقدّم قهوة مختصة",
@@ -13,18 +15,26 @@ const EXAMPLES = [
 ];
 
 interface HeroProps {
-  onSubmit: (prompt: string, modelId: string) => void;
+  onSubmit: (prompt: string) => void;
   isGenerating: boolean;
+  modelId: string;
+  onModelChange: (modelId: string) => void;
+  user: AuthUser | null;
 }
 
-export default function Hero({ onSubmit, isGenerating }: HeroProps) {
+export default function Hero({
+  onSubmit,
+  isGenerating,
+  modelId,
+  onModelChange,
+  user,
+}: HeroProps) {
   const [value, setValue] = useState("");
-  const [selectedModel, setSelectedModel] = useState<string>(MODEL_INFO[0].id);
 
   function submit() {
     const trimmed = value.trim();
     if (!trimmed || isGenerating) return;
-    onSubmit(trimmed, selectedModel);
+    onSubmit(trimmed);
   }
 
   return (
@@ -35,10 +45,14 @@ export default function Hero({ onSubmit, isGenerating }: HeroProps) {
         style={{ animationDelay: "-4s" }}
       />
 
+      <div className="absolute inset-x-0 top-0 z-20 flex justify-end px-5 py-4 sm:px-8">
+        <UserMenu user={user} />
+      </div>
+
       <div className="relative z-10 flex w-full max-w-2xl flex-col items-center text-center animate-fade-up">
         <div className="mb-7 flex items-center gap-2 rounded-full border border-border-subtle bg-bg-panel/60 px-4 py-1.5 text-xs text-ink-muted backdrop-blur">
           <LogoMark className="h-5 w-5" />
-          <span>بنّاء — مدعوم بنموذج Gemini 3.7 Flash</span>
+          <span>بنّاء — يبني تطبيقات React أمامك مباشرة</span>
         </div>
 
         <h1 className="text-4xl font-bold leading-[1.35] sm:text-5xl">
@@ -71,14 +85,15 @@ export default function Hero({ onSubmit, isGenerating }: HeroProps) {
             className="w-full resize-none bg-transparent px-3 py-3 text-[15px] leading-relaxed text-ink placeholder:text-ink-faint focus:outline-none"
           />
           
-          {/* Model selector */}
+          {/* Model selector — the choice is owned by the page so it also applies
+              to every follow-up edit, not just this first prompt. */}
           <div className="mb-3 flex gap-2 overflow-x-auto px-2 pb-1">
             {MODEL_INFO.map((model) => (
               <button
                 key={model.id}
-                onClick={() => setSelectedModel(model.id)}
+                onClick={() => onModelChange(model.id)}
                 className={`flex-shrink-0 rounded-lg border px-3 py-2 text-right text-xs transition-all ${
-                  selectedModel === model.id
+                  modelId === model.id
                     ? "border-accent bg-accent/10 text-accent"
                     : "border-border-subtle bg-bg-panel/50 text-ink-muted hover:border-accent/50 hover:text-ink"
                 }`}
