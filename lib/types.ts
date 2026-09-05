@@ -1,5 +1,21 @@
 export type VersionStatus = "pending" | "done" | "error" | "cancelled";
 
+/**
+ * Machine-readable reason a generation was refused *before* the stream opened.
+ *
+ * Declared here rather than next to the wire format because the version list
+ * carries it: the sidebar renders "top up" as a button for `insufficient_credits`
+ * and as a sentence for everything else, and a stringly-typed comparison there
+ * would silently stop matching the day the server renames a code.
+ */
+export type GenerateErrorCode =
+  | "rate_limited"
+  | "invalid_request"
+  | "auth_required"
+  | "insufficient_credits"
+  | "billing_unavailable"
+  | "provider_error";
+
 export type ProjectFiles = Record<string, string>;
 
 export interface ReactProject {
@@ -27,6 +43,8 @@ export interface Version {
   project: ReactProject | null;
   status: VersionStatus;
   errorMessage?: string;
+  /** Set only for a pre-stream refusal, so the UI can offer the right recovery. */
+  errorCode?: GenerateErrorCode;
   createdAt: number;
   /** Present only while `status === "pending"`. */
   streaming?: StreamingState;

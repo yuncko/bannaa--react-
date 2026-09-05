@@ -357,3 +357,101 @@ export function ShieldIcon({ className = "h-4 w-4" }: { className?: string }) {
     </svg>
   );
 }
+
+/* ── Billing ── */
+
+/**
+ * Four-pointed sparkle with concave sides — the decorative glyph scattered around
+ * the welcome gift. Distinct from `SparkleIcon`, which is a stroked five-point star
+ * used inline with text.
+ */
+export function SparklePlusIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" className={className} aria-hidden="true">
+      <path
+        d="M12 2Q13.2 10.8 22 12Q13.2 13.2 12 22Q10.8 13.2 2 12Q10.8 10.8 12 2Z"
+        fill="currentColor"
+      />
+    </svg>
+  );
+}
+
+export function CloseIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" className={className}>
+      <path
+        d="M6 6l12 12M18 6 6 18"
+        stroke="currentColor"
+        strokeWidth="1.9"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function WalletIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" className={className}>
+      <path
+        d="M3.5 8.5A2.5 2.5 0 0 1 6 6h11.5A2.5 2.5 0 0 1 20 8.5v7a2.5 2.5 0 0 1-2.5 2.5H6a2.5 2.5 0 0 1-2.5-2.5v-7Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+      <path d="M3.5 10.5h17" stroke="currentColor" strokeWidth="1.6" />
+      <circle cx="16.5" cy="14.5" r="1.15" fill="currentColor" />
+    </svg>
+  );
+}
+
+/**
+ * Wrapped gift box. Solid rather than stroked, because it is used at 40px+ as the
+ * hero of the welcome modal, where a 1.6px outline disappears.
+ */
+export function GiftIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" className={className}>
+      <path
+        d="M3.6 10.5h16.8v8.1a1.9 1.9 0 0 1-1.9 1.9H5.5a1.9 1.9 0 0 1-1.9-1.9v-8.1Z"
+        fill="currentColor"
+        opacity=".92"
+      />
+      <path
+        d="M2.6 7.4A1.4 1.4 0 0 1 4 6h16a1.4 1.4 0 0 1 1.4 1.4v1.7a1.4 1.4 0 0 1-1.4 1.4H4a1.4 1.4 0 0 1-1.4-1.4V7.4Z"
+        fill="currentColor"
+      />
+      <path
+        d="M12 6c-.9-2-2.1-3-3.5-3a1.9 1.9 0 0 0 0 3.8M12 6c.9-2 2.1-3 3.5-3a1.9 1.9 0 0 1 0 3.8"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+      />
+    </svg>
+  );
+}
+
+export function CrownIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" className={className}>
+      <path
+        d="M3 8.5l3.4 2.6L12 4l5.6 7.1L21 8.5l-1.7 9.6a1.3 1.3 0 0 1-1.3 1.1H6a1.3 1.3 0 0 1-1.3-1.1L3 8.5Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}
+
+export function BoltIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" className={className}>
+      <path
+        d="M13.5 2.5 5 13.2h5.2l-.7 8.3L18.5 10h-5.3l.3-7.5Z"
+        stroke="currentColor"
+        strokeWidth="1.6"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
+}

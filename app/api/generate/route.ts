@@ -13,9 +13,15 @@ import { parsePartialProject } from "@/lib/stream-parser";
 import {
   STREAM_CONTENT_TYPE,
   encodeEvent,
+  type GenerateErrorBody,
+  type GenerateErrorCode,
   type StreamEvent,
 } from "@/lib/stream-protocol";
 import { checkRateLimit, clientKey } from "@/lib/rate-limit";
+import { costForRun, formatMoney, type RunKind } from "@/lib/billing";
+import { debitCredits, getBalanceCents, refundCredits } from "@/lib/credits";
+import { getSessionUser } from "@/lib/supabase/server";
+import { isSupabaseConfigured } from "@/lib/supabase/config";
 import type { ReactProject } from "@/lib/types";
 
 export const runtime = "nodejs";
@@ -29,6 +35,25 @@ interface ParsedRequest {
   previousProject?: ReactProject;
   stream: boolean;
   repair?: { message: string; file?: string; stack?: string };
+}
+
+/** What this request costs and who is paying for it. */
+interface Charge {
+  kind: RunKind;
+  amountCents: number;
+  /** Idempotency key, so a retried request is billed once. */
+  reference: string;
+}
+
+function errorResponse(
+  code: GenerateErrorCode,
+  error: string,
+  status: number,
+  extra?: Omit<GenerateErrorBody, "error" | "code">,
+  headers?: Record<string, string>
+): NextResponse {
+  const body: GenerateErrorBody = { error, code, ...extra };
+  return NextResponse.json(body, { status, headers });
 }
 
 /** Maps a provider failure onto a user-facing Arabic message and HTTP status. */
@@ -140,15 +165,15 @@ function buildInput(req: ParsedRequest): { input: string; system?: string } {
 export async function POST(req: NextRequest) {
   const limit = checkRateLimit(clientKey(req.headers));
   if (!limit.allowed) {
-    return NextResponse.json(
-      { error: `عدد كبير من الطلبات. انتظر ${limit.retryAfter} ثانية ثم أعد المحاولة.` },
+    return errorResponse(
+      "rate_limited",
+      `عدد كبير من الطلبات. انتظر ${limit.retryAfter} ثانية ثم أعد المحاولة.`,
+      429,
+      undefined,
       {
-        status: 429,
-        headers: {
-          "Retry-After": String(limit.retryAfter),
-          "X-RateLimit-Limit": String(limit.limit),
-          "X-RateLimit-Remaining": "0",
-        },
+        "Retry-After": String(limit.retryAfter),
+        "X-RateLimit-Limit": String(limit.limit),
+        "X-RateLimit-Remaining": "0",
       }
     );
   }
@@ -157,28 +182,109 @@ export async function POST(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return NextResponse.json({ error: "طلب غير صالح." }, { status: 400 });
+    return errorResponse("invalid_request", "طلب غير صالح.", 400);
   }
 
   const parsed = parseBody(body);
   if ("error" in parsed) {
-    return NextResponse.json({ error: parsed.error }, { status: 400 });
+    return errorResponse("invalid_request", parsed.error, 400);
   }
 
-  return parsed.stream ? streamResponse(req, parsed) : blockingResponse(parsed);
+  // Billing runs after validation so a malformed request is never charged, and
+  // after the rate limit so an abusive caller never reaches the database.
+  const gate = await authorizeAndCharge(parsed);
+  if ("response" in gate) return gate.response;
+
+  return parsed.stream
+    ? streamResponse(req, parsed, gate.charge)
+    : blockingResponse(parsed, gate.charge);
+}
+
+/**
+ * Establishes who is paying, then reserves the cost of the run.
+ *
+ * The charge happens up front rather than on success, for two reasons. The
+ * provider bills us for the attempt whichever way it ends, and a check-then-charge
+ * order lets two concurrent requests both pass the same balance check. The refund
+ * on failure gives the user the same outcome as charging late.
+ *
+ * A deployment without Supabase keeps working unbilled: the generator does not
+ * depend on auth, and taking the whole site down because a migration has not been
+ * applied would be the wrong trade.
+ */
+async function authorizeAndCharge(
+  parsed: ParsedRequest
+): Promise<{ charge: Charge | null } | { response: NextResponse }> {
+  if (!isSupabaseConfigured) return { charge: null };
+
+  const user = await getSessionUser();
+  if (!user) {
+    return {
+      response: errorResponse(
+        "auth_required",
+        "سجّل الدخول للبدء — ستحصل على رصيد ترحيبي بقيمة 5$ فورًا.",
+        401
+      ),
+    };
+  }
+
+  const kind: RunKind = parsed.repair ? "repair" : parsed.previousProject ? "edit" : "create";
+  const amountCents = costForRun(parsed.modelId, kind);
+
+  // A fresh reference per request. It does not deduplicate client retries — the
+  // client sends no idempotency key — but it is what lets the refund verify that
+  // this exact charge happened and refuse to credit twice.
+  const reference = crypto.randomUUID();
+
+  const result = await debitCredits(
+    amountCents,
+    { model: parsed.modelId ?? "default", kind },
+    reference
+  );
+
+  if (result.unavailable) {
+    // The wallet could not be reached. Failing closed would take generation down
+    // for everyone on a transient database error, so the run proceeds unbilled and
+    // the gap is left in the log where it can be reconciled.
+    console.error("[/api/generate] billing unavailable — running unbilled", {
+      user: user.id,
+      amountCents,
+    });
+    return { charge: null };
+  }
+
+  if (!result.charged) {
+    return {
+      response: errorResponse(
+        "insufficient_credits",
+        `رصيدك ${formatMoney(result.balanceCents)} ولا يكفي لهذا الطلب (${formatMoney(amountCents)}). اشترك لمتابعة البناء.`,
+        402,
+        { balanceCents: result.balanceCents, requiredCents: amountCents }
+      ),
+    };
+  }
+
+  return { charge: { kind, amountCents, reference } };
 }
 
 /**
  * Streaming path: emits NDJSON events as the model writes, then one `done` event
  * carrying the merged project.
  */
-function streamResponse(req: NextRequest, parsed: ParsedRequest): Response {
+function streamResponse(
+  req: NextRequest,
+  parsed: ParsedRequest,
+  charge: Charge | null
+): Response {
   const encoder = new TextEncoder();
   const isEdit = Boolean(parsed.previousProject);
 
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
+      // The run was billed before the stream opened, so anything that ends without
+      // a project has to give the money back.
+      let settled = false;
       const send = (event: StreamEvent) => {
         if (closed) return;
         try {
@@ -260,7 +366,16 @@ function streamResponse(req: NextRequest, parsed: ParsedRequest): Response {
             retryable: true,
           });
         } else {
+          settled = true;
           send({ type: "done", project });
+          if (charge) {
+            // After `done`, so a slow balance read cannot delay the project the
+            // user is waiting for. The event is advisory; `/account` is the record.
+            const balanceCents = await currentBalance();
+            if (balanceCents !== null) {
+              send({ type: "balance", balanceCents, chargedCents: charge.amountCents });
+            }
+          }
         }
       } catch (err) {
         // A client-side cancel is not an error worth reporting; the socket is gone.
@@ -272,6 +387,11 @@ function streamResponse(req: NextRequest, parsed: ParsedRequest): Response {
           send({ type: "error", error: describeError(message).error, retryable: true });
         }
       } finally {
+        // Covers every non-success exit, cancellation included: the user got no
+        // project, so they keep their credit.
+        if (charge && !settled) {
+          await refundCredits(charge.amountCents, charge.reference);
+        }
         if (!closed) {
           try {
             controller.close();
@@ -295,7 +415,10 @@ function streamResponse(req: NextRequest, parsed: ParsedRequest): Response {
 }
 
 /** Non-streaming path, kept for clients that cannot read a stream. */
-async function blockingResponse(parsed: ParsedRequest): Promise<Response> {
+async function blockingResponse(
+  parsed: ParsedRequest,
+  charge: Charge | null
+): Promise<Response> {
   try {
     const { input, system } = buildInput(parsed);
     const raw = await generateRawOutput(input, parsed.modelId, { system });
@@ -304,19 +427,35 @@ async function blockingResponse(parsed: ParsedRequest): Promise<Response> {
     const project = mergeProjects(parsed.previousProject, response.project, response.deletedFiles);
 
     if (!project.files || Object.keys(project.files).length === 0) {
-      return NextResponse.json(
-        {
-          error: "تعذّر توليد مشروع React صالح من النموذج. حاول إعادة صياغة الطلب بشكل أوضح.",
-        },
-        { status: 502 }
+      if (charge) await refundCredits(charge.amountCents, charge.reference);
+      return errorResponse(
+        "provider_error",
+        "تعذّر توليد مشروع React صالح من النموذج. حاول إعادة صياغة الطلب بشكل أوضح.",
+        502
       );
     }
 
-    return NextResponse.json({ project });
+    const balanceCents = charge ? await currentBalance() : null;
+    return NextResponse.json({
+      project,
+      ...(balanceCents !== null && charge
+        ? { balanceCents, chargedCents: charge.amountCents }
+        : {}),
+    });
   } catch (err) {
+    if (charge) await refundCredits(charge.amountCents, charge.reference);
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
     console.error("[/api/generate] error:", message);
     const { status, error } = describeError(message);
-    return NextResponse.json({ error }, { status });
+    return errorResponse("provider_error", error, status);
+  }
+}
+
+/** Balance after a charge, or `null` when it cannot be read — never fatal. */
+async function currentBalance(): Promise<number | null> {
+  try {
+    return await getBalanceCents();
+  } catch {
+    return null;
   }
 }

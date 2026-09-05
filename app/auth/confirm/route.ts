@@ -10,6 +10,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import type { EmailOtpType } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
 import { authErrorUrl, resolveOrigin, safeRedirectPath } from "@/lib/auth-redirect";
+import { rejectDisallowedEmail } from "@/lib/auth-gate";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 
 /** Types this route accepts, so an arbitrary `type` can't be forced through. */
@@ -46,6 +47,12 @@ export async function GET(request: NextRequest) {
     if (error) {
       console.error("[auth/confirm] verify failed:", error.code ?? error.message);
       return NextResponse.redirect(authErrorUrl(origin, "link_expired", next));
+    }
+
+    // Same gate as the OAuth leg: an invite or a magic link can hand out a
+    // session for an address the sign-up form would have refused.
+    if (await rejectDisallowedEmail(supabase)) {
+      return NextResponse.redirect(authErrorUrl(origin, "email_not_allowed", next));
     }
   } catch (err) {
     console.error("[auth/confirm] unexpected failure:", err);

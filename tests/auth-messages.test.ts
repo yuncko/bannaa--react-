@@ -31,7 +31,7 @@ test("accepts ordinary addresses and rejects obvious typos", () => {
 });
 
 test("sign-up validation reports one error per bad field", () => {
-  assert.deepEqual(validateSignUp({ email: "a@b.co", password: "longenough1" }), {});
+  assert.deepEqual(validateSignUp({ email: "user@gmail.com", password: "longenough1" }), {});
 
   const empty = validateSignUp({ email: "", password: "" });
   assert.ok(empty.email);
@@ -39,29 +39,56 @@ test("sign-up validation reports one error per bad field", () => {
 
   assert.ok(validateSignUp({ email: "nope", password: "longenough1" }).email);
   assert.ok(
-    validateSignUp({ email: "a@b.co", password: "a".repeat(MIN_PASSWORD_LENGTH - 1) }).password,
+    validateSignUp({ email: "user@gmail.com", password: "a".repeat(MIN_PASSWORD_LENGTH - 1) })
+      .password,
     "below the minimum length must be rejected"
   );
   // bcrypt silently truncates past 72 bytes, so a longer password would not be
   // the one that gets stored.
-  assert.ok(validateSignUp({ email: "a@b.co", password: "a".repeat(73) }).password);
-  assert.equal(validateSignUp({ email: "a@b.co", password: "a".repeat(72) }).password, undefined);
+  assert.ok(validateSignUp({ email: "user@gmail.com", password: "a".repeat(73) }).password);
+  assert.equal(
+    validateSignUp({ email: "user@gmail.com", password: "a".repeat(72) }).password,
+    undefined
+  );
+});
+
+test("sign-up validation enforces the Gmail-only policy", () => {
+  // A well-formed address on another provider is a *policy* rejection, and it has
+  // to name the required domain rather than say "invalid".
+  const rejected = validateSignUp({ email: "user@mailinator.com", password: "longenough1" });
+  assert.ok(rejected.email);
+  assert.match(rejected.email, /gmail\.com/);
+  assert.equal(
+    validateSignUp({ email: "user@googlemail.com", password: "longenough1" }).email,
+    undefined,
+    "the googlemail alias is the same Google mailbox"
+  );
+  // Shape is checked before policy, so a typo does not get the domain lecture.
+  assert.doesNotMatch(validateSignUp({ email: "nope", password: "longenough1" }).email!, /gmail/);
 });
 
 test("sign-up validation bounds the optional display name", () => {
-  assert.equal(validateSignUp({ email: "a@b.co", password: "longenough1", name: "" }).name, undefined);
   assert.equal(
-    validateSignUp({ email: "a@b.co", password: "longenough1", name: "أحمد" }).name,
+    validateSignUp({ email: "user@gmail.com", password: "longenough1", name: "" }).name,
     undefined
   );
-  assert.ok(validateSignUp({ email: "a@b.co", password: "longenough1", name: "x".repeat(81) }).name);
+  assert.equal(
+    validateSignUp({ email: "user@gmail.com", password: "longenough1", name: "أحمد" }).name,
+    undefined
+  );
+  assert.ok(
+    validateSignUp({ email: "user@gmail.com", password: "longenough1", name: "x".repeat(81) }).name
+  );
 });
 
-test("sign-in validation checks presence, not policy", () => {
-  assert.deepEqual(validateSignIn({ email: "a@b.co", password: "x" }), {});
-  assert.ok(validateSignIn({ email: "a@b.co", password: "" }).password);
+test("sign-in validation checks presence and the same domain policy", () => {
+  assert.deepEqual(validateSignIn({ email: "user@gmail.com", password: "x" }), {});
+  assert.ok(validateSignIn({ email: "user@gmail.com", password: "" }).password);
   assert.ok(validateSignIn({ email: "", password: "x" }).email);
   assert.ok(validateSignIn({ email: "bad", password: "x" }).email);
+  // The policy blocks signing in too, not just registering: an account made
+  // before the rule existed must be told why, not shown "invalid credentials".
+  assert.ok(validateSignIn({ email: "user@outlook.com", password: "x" }).email);
 });
 
 test("known Supabase codes map to Arabic, unknown ones do not leak provider text", () => {

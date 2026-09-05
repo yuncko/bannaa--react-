@@ -10,6 +10,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 import { authErrorUrl, resolveOrigin, safeRedirectPath } from "@/lib/auth-redirect";
+import { rejectDisallowedEmail } from "@/lib/auth-gate";
 import { isSupabaseConfigured } from "@/lib/supabase/config";
 
 export async function GET(request: NextRequest) {
@@ -47,6 +48,12 @@ export async function GET(request: NextRequest) {
     if (error) {
       console.error("[auth/callback] exchange failed:", error.code ?? error.message);
       return NextResponse.redirect(authErrorUrl(origin, "exchange_failed", next));
+    }
+
+    // A provider account can carry any address — GitHub in particular — so the
+    // Gmail-only rule is enforced here, where the address is finally known.
+    if (await rejectDisallowedEmail(supabase)) {
+      return NextResponse.redirect(authErrorUrl(origin, "email_not_allowed", next));
     }
   } catch (err) {
     console.error("[auth/callback] unexpected failure:", err);

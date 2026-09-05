@@ -213,7 +213,10 @@ export async function updatePassword(
   const password = String(formData.get("password") ?? "");
   const confirm = String(formData.get("confirm") ?? "");
 
-  const errors = validateSignUp({ email: "placeholder@example.com", password });
+  // Only the password rules apply here; the address is already fixed. The
+  // placeholder satisfies the Gmail-only rule so it cannot fail on a field this
+  // form does not even have, and the resulting error is discarded regardless.
+  const errors = validateSignUp({ email: "placeholder@gmail.com", password });
   delete errors.email;
   if (!errors.password && password !== confirm) {
     errors.password = "الكلمتان غير متطابقتين.";

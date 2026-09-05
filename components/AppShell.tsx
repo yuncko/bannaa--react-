@@ -16,8 +16,15 @@ import UserMenu from "@/components/auth/UserMenu";
 import { LogoMark } from "@/components/Icons";
 import { useGeneration } from "@/lib/useGeneration";
 import type { AuthUser } from "@/lib/auth-user";
+import type { WalletView } from "@/lib/billing";
 
-export default function AppShell({ user }: { user: AuthUser | null }) {
+export default function AppShell({
+  user,
+  wallet = null,
+}: {
+  user: AuthUser | null;
+  wallet?: WalletView | null;
+}) {
   const {
     versions,
     activeId,
@@ -26,6 +33,7 @@ export default function AppShell({ user }: { user: AuthUser | null }) {
     setModelId,
     isGenerating,
     hydrated,
+    liveBalanceCents,
     submit,
     cancel,
     repair,
@@ -34,6 +42,13 @@ export default function AppShell({ user }: { user: AuthUser | null }) {
   const [viewMode, setViewMode] = useState<ViewMode>("preview");
 
   const activeVersion = versions.find((v) => v.id === activeId) ?? null;
+
+  // The server's number is authoritative but frozen at page load; a run reports the
+  // balance it left behind, so the newer of the two is the one to show.
+  const liveWallet: WalletView | null =
+    wallet && liveBalanceCents !== null
+      ? { ...wallet, balanceCents: liveBalanceCents }
+      : wallet;
 
   function handleSubmit(prompt: string) {
     setViewMode("preview");
@@ -53,6 +68,7 @@ export default function AppShell({ user }: { user: AuthUser | null }) {
         modelId={modelId}
         onModelChange={setModelId}
         user={user}
+        wallet={liveWallet}
       />
     );
   }
@@ -63,7 +79,7 @@ export default function AppShell({ user }: { user: AuthUser | null }) {
         <LogoMark className="h-6 w-6" />
         <span className="text-sm font-semibold">بنّاء</span>
         <div className="ms-auto">
-          <UserMenu user={user} variant="compact" />
+          <UserMenu user={user} wallet={liveWallet} variant="compact" />
         </div>
       </header>
       <div className="flex min-h-0 flex-1">
@@ -78,6 +94,7 @@ export default function AppShell({ user }: { user: AuthUser | null }) {
           modelId={modelId}
           onModelChange={setModelId}
           user={user}
+          wallet={liveWallet}
         />
         <PreviewPanel
           version={activeVersion}
