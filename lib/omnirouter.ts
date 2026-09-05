@@ -5,6 +5,22 @@ import "server-only";
 
 import type { ReactProject } from "./types";
 import { MODELS, isKnownModel } from "./models";
+import { SANDBOX_MODULE_LIST } from "./sandbox-modules";
+import { parseSseData, splitSseFrames } from "./stream-parser";
+
+// Prompt construction, response parsing, and merging live in `lib/project.ts`
+// because they need no credentials or network access. Re-exported so callers can
+// keep treating the provider module as their single entry point.
+export {
+  buildUserInput,
+  buildRepairInput,
+  mergeProjects,
+  extractReactProject,
+  extractProjectResponse,
+  normalizeProject,
+  pickEntryFile,
+} from "./project";
+export type { ProjectResponse } from "./project";
 
 const BASE_URL = process.env.OMNIROUTER_BASE_URL || "https://omnirouter.li/v1";
 
@@ -43,6 +59,16 @@ export function redactSecrets(text: string): string {
   }
   return safe;
 }
+
+/**
+ * The single source of truth, prompt-side, for what the preview sandbox can
+ * import. The package list itself lives in `lib/sandbox-modules.ts` so the
+ * resolver in `lib/bundler.ts` and these prompts cannot drift: anything
+ * advertised here but absent there resolves to a no-op stub and trips the
+ * missing-module warning, which is how the previous list (recharts, date-fns,
+ * react-router-dom) silently broke generated code.
+ */
+const RUNTIME_MODULES_RULE = `The preview sandbox resolves ONLY these packages: ${SANDBOX_MODULE_LIST}. Any other package (recharts, chart.js, date-fns, react-router-dom, axios, react-hook-form, swiper, three, gsap, …) does NOT exist there and will fail at runtime — implement the behaviour yourself with React, plain TypeScript, Tailwind, and inline SVG instead. There is no router: model navigation with local state. There is no charting library: draw charts with inline SVG or Tailwind-styled divs. There is no date library: use the built-in Date and Intl APIs.`;
 
 export const SYSTEM_INSTRUCTION = `You are "بنّاء" (Bannaa), a world-class Senior React & TypeScript Architect and Award-Winning Product Designer, on par with the design teams at Linear, Vercel, Stripe, and Apple. You are obsessed with restraint, clarity, and craft — not decoration.
 
@@ -117,60 +143,128 @@ STRICT ARCHITECTURAL RULES:
    - If the prompt is in Arabic or for an Arab audience, write all text in clear, elegant Arabic, use RTL layout (\`dir="rtl"\`), and format numbers/currencies appropriately.
    - If the prompt is in English, write all text in English with LTR layout.
 
-5. MODIFICATIONS & ITERATIONS:
-   - When the user asks for a modification to an existing project, return the updated project JSON.
-   - Update, add, or refine only the files that need changes, keeping the rest of the components consistent with the design system already established (same accent color, radius scale, spacing rhythm) unless the user explicitly asks to change the visual direction.
+5. MODIFICATIONS & ITERATIONS (TARGETED EDITS — IMPORTANT):
+   - When the user asks for a modification to an existing project, return ONLY the files you actually changed or added. Do NOT re-emit files whose content is byte-for-byte identical to what you were given. The caller merges your response over the existing project, so an omitted file is kept unchanged.
+   - Always include the complete, final content of each file you do return. Never return a diff, a fragment, an ellipsis, or a comment such as "// rest unchanged".
+   - To remove a file, list its path in an optional top-level "deletedFiles" array of strings.
+   - Keep "title" and "description" accurate; repeat them unchanged if the change does not affect them.
+   - Stay consistent with the design system already established (same accent color, radius scale, spacing rhythm) unless the user explicitly asks to change the visual direction.
+
+6. RUNTIME ENVIRONMENT — NO EXTRA DEPENDENCIES:
+   - ${RUNTIME_MODULES_RULE}
+   - There is no build step, no CSS file, and no \`public/\` folder: style exclusively with Tailwind utility classes, and do not emit \`package.json\`, \`index.html\`, \`vite.config\`, \`tailwind.config\`, or \`.css\` files.
+   - Only import a Lucide icon that really exists in lucide-react. Brand logos (Github, Twitter, Linkedin, Instagram, Facebook) are NOT part of the set — draw those as inline SVG.
 
 Before writing code, silently decide: (1) one accent color + neutral base that fits the topic, (2) one corner-radius scale, (3) one spacing rhythm, (4) the minimum set of sections that truly serve this specific product — then build strictly within those decisions. Return ONLY the valid JSON object now.`;
 
-export function buildUserInput(prompt: string, previousProject?: ReactProject): string {
-  if (previousProject && previousProject.files && Object.keys(previousProject.files).length > 0) {
-    return [
-      `USER MODIFICATION REQUEST: ${prompt}`,
-      "",
-      `CURRENT PROJECT: "${previousProject.title || "React Project"}"`,
-      `FILES IN CURRENT PROJECT:`,
-      JSON.stringify(
-        {
-          title: previousProject.title,
-          description: previousProject.description,
-          files: previousProject.files,
-        },
-        null,
-        2
-      ),
-      "",
-      "Please return the complete updated JSON with all updated files incorporating the requested changes.",
-    ].join("\n");
-  }
+/** Hard ceiling on generated files, both to bound cost and to reject runaway output. */
+const MAX_OUTPUT_TOKENS = 32_000;
 
-  return `USER PROMPT FOR NEW REACT APPLICATION:\n${prompt}`;
-}
+/**
+ * Instruction for the automatic repair pass. Kept separate from the design
+ * prompt so a repair request spends tokens on the failure, not on aesthetics.
+ */
+export const REPAIR_INSTRUCTION = `You are a senior React + TypeScript engineer fixing a runtime or compilation error in a generated project.
+
+You will receive the project files and the exact error produced when the app was executed in a browser sandbox.
+
+RULES:
+1. Diagnose the real cause, then fix it. Do not restyle, redesign, rename, or "improve" anything unrelated to the error.
+2. Return ONLY a valid JSON object (no markdown wrapping, no prose):
+   {
+     "title": "unchanged project title",
+     "description": "unchanged description",
+     "files": { "src/Path.tsx": "complete fixed file content" }
+   }
+3. Include ONLY the files you changed, with their complete final content. Omitted files are kept as-is.
+4. ${RUNTIME_MODULES_RULE} If the error is a missing or unresolved module, rewrite the code to drop that dependency rather than keeping the import.
+5. Common causes to check: a component used but never imported, a default vs named export mismatch, an undefined value read before initialisation, a hook called conditionally, a .map over a possibly-undefined array, or a Lucide icon name that does not exist.
+
+Return ONLY the JSON object now.`;
+
 
 interface ChatCompletionResponse {
-  choices?: Array<{ message?: { content?: string | null } }>;
+  choices?: Array<{ message?: { content?: string | null }; finish_reason?: string | null }>;
 }
 
-async function callOnce(key: string, model: string, userInput: string): Promise<string> {
+/** Options shared by the streaming and non-streaming request paths. */
+export interface CallOptions {
+  /** System prompt to use; defaults to the design instruction. */
+  system?: string;
+  /** Caller-owned cancellation, wired to the client disconnecting. */
+  signal?: AbortSignal;
+  /** Invoked with each content delta when streaming. */
+  onDelta?: (delta: string) => void;
+  /**
+   * Called before each attempt with the model about to be tried.
+   *
+   * Failover can start a second stream after the first emitted partial text, so
+   * a streaming caller must treat this as "discard whatever you accumulated".
+   */
+  onAttempt?: (model: string) => void;
+}
+
+/** Raised when the model stopped at the output cap, leaving JSON unterminated. */
+export class TruncatedOutputError extends Error {
+  constructor(model: string) {
+    super(
+      `HTTP 200 truncated: ${model} hit the output token limit (finish_reason=length)`
+    );
+    this.name = "TruncatedOutputError";
+  }
+}
+
+function buildRequestBody(model: string, userInput: string, options: CallOptions, stream: boolean) {
+  return JSON.stringify({
+    model,
+    messages: [
+      { role: "system", content: options.system ?? SYSTEM_INSTRUCTION },
+      { role: "user", content: userInput },
+    ],
+    // Low but non-zero: the output must be strictly parseable JSON, and 0.7 was
+    // buying variance in syntax rather than in design.
+    temperature: 0.3,
+    max_tokens: MAX_OUTPUT_TOKENS,
+    stream,
+  });
+}
+
+/** Combines the caller's signal with a wall-clock timeout. */
+function withTimeout(signal: AbortSignal | undefined, ms: number) {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 120_000);
+  const timer = setTimeout(() => controller.abort(new Error("timeout")), ms);
+  const onAbort = () => controller.abort(signal?.reason);
+  if (signal) {
+    if (signal.aborted) controller.abort(signal.reason);
+    else signal.addEventListener("abort", onAbort, { once: true });
+  }
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
+async function callOnce(
+  key: string,
+  model: string,
+  userInput: string,
+  options: CallOptions = {}
+): Promise<string> {
+  const { signal, cleanup } = withTimeout(options.signal, 180_000);
+  const streaming = Boolean(options.onDelta);
 
   try {
     const res = await fetch(`${BASE_URL}/chat/completions`, {
       method: "POST",
-      signal: controller.signal,
+      signal,
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${key}`,
       },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: SYSTEM_INSTRUCTION },
-          { role: "user", content: userInput },
-        ],
-        temperature: 0.7,
-      }),
+      body: buildRequestBody(model, userInput, options, streaming),
     });
 
     if (!res.ok) {
@@ -180,33 +274,97 @@ async function callOnce(key: string, model: string, userInput: string): Promise<
       );
     }
 
-    const data = (await res.json()) as ChatCompletionResponse;
-    const content = data.choices?.[0]?.message?.content ?? "";
+    const { content, finishReason } = streaming
+      ? await readStream(res, options.onDelta!)
+      : await readWhole(res);
+
     if (!content.trim()) {
       throw new Error(`Empty response from ${model}`);
     }
+
+    // A truncated project parses into a plausible-looking single-file result, so
+    // it has to be rejected here rather than downstream.
+    if (finishReason === "length") {
+      throw new TruncatedOutputError(model);
+    }
+
     return content;
   } finally {
-    clearTimeout(timer);
+    cleanup();
   }
 }
 
+async function readWhole(res: Response): Promise<{ content: string; finishReason?: string }> {
+  const data = (await res.json()) as ChatCompletionResponse;
+  return {
+    content: data.choices?.[0]?.message?.content ?? "",
+    finishReason: data.choices?.[0]?.finish_reason ?? undefined,
+  };
+}
+
+async function readStream(
+  res: Response,
+  onDelta: (delta: string) => void
+): Promise<{ content: string; finishReason?: string }> {
+  if (!res.body) throw new Error("Streaming response had no body");
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let content = "";
+  let finishReason: string | undefined;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const { frames, rest } = splitSseFrames(buffer);
+      buffer = rest;
+
+      for (const frame of frames) {
+        if (frame === "[DONE]") continue;
+        const { content: delta, finishReason: reason } = parseSseData(frame);
+        if (reason) finishReason = reason;
+        if (delta) {
+          content += delta;
+          onDelta(delta);
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  return { content, finishReason };
+}
+
 function isRetryable(err: unknown): boolean {
+  // A user-initiated cancel must never be retried against the next key.
+  if (err instanceof Error && err.name === "AbortError") return false;
+
   const message = err instanceof Error ? err.message : String(err);
-  // Retry on network failures, timeouts, rate limits, auth/quota and 5xx errors.
+  // Retry on network failures, timeouts, rate limits, auth/quota, 5xx, and
+  // truncated output (a different model or key may fit the response).
   return (
     /HTTP (401|402|403|429|5\d\d)/.test(message) ||
+    /truncated/i.test(message) ||
     /fetch failed|enotfound|econnrefused|network|aborted|timeout|empty response/i.test(message)
   );
 }
 
 /**
  * Calls Omnirouter chat completions with the specified model, failing over across all API keys.
- * If primaryModel is provided, only tries that model with all keys.
- * Otherwise falls back across all models.
+ * If primaryModel is provided, it is tried with every key first, then the
+ * remaining models. Passing `onDelta` switches the request to SSE streaming.
  * Throws the last error if every combination fails.
  */
-export async function generateRawOutput(userInput: string, primaryModel?: string): Promise<string> {
+export async function generateRawOutput(
+  userInput: string,
+  primaryModel?: string,
+  options: CallOptions = {}
+): Promise<string> {
   const apiKeys = loadApiKeys();
 
   if (apiKeys.length === 0) {
@@ -217,11 +375,18 @@ export async function generateRawOutput(userInput: string, primaryModel?: string
 
   let lastError: unknown = new Error("No attempts made");
 
+  // Retrying a stream after partial output would duplicate text on the client,
+  // so `onAttempt` fires first to let the caller reset what it has shown.
+  const attempt = (key: string, model: string) => {
+    options.onAttempt?.(model);
+    return callOnce(key, model, userInput, options);
+  };
+
   // If user selected a specific model, try it with all keys first
   if (primaryModel && isKnownModel(primaryModel)) {
     for (const [index, key] of apiKeys.entries()) {
       try {
-        return await callOnce(key, primaryModel, userInput);
+        return await attempt(key, primaryModel);
       } catch (err) {
         lastError = err;
         if (!isRetryable(err)) throw err;
@@ -242,7 +407,7 @@ export async function generateRawOutput(userInput: string, primaryModel?: string
   for (const model of fallbackModels) {
     for (const [index, key] of apiKeys.entries()) {
       try {
-        return await callOnce(key, model, userInput);
+        return await attempt(key, model);
       } catch (err) {
         lastError = err;
         if (!isRetryable(err)) throw err;
@@ -255,142 +420,4 @@ export async function generateRawOutput(userInput: string, primaryModel?: string
   }
 
   throw lastError;
-}
-
-/**
- * Extracts and parses a ReactProject object from the model's raw output.
- * Handles JSON parsing, markdown code fences, file marker blocks, and fallbacks.
- */
-export function extractReactProject(raw: string): ReactProject {
-  let text = (raw ?? "").trim();
-
-  // Strip markdown code block fences if present
-  const jsonFenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (jsonFenceMatch && jsonFenceMatch[1].trim().length > 0) {
-    text = jsonFenceMatch[1].trim();
-  }
-
-  // Attempt direct JSON parse
-  try {
-    const parsed = JSON.parse(text);
-    if (parsed && typeof parsed === "object" && parsed.files && typeof parsed.files === "object") {
-      // Check if the model accidentally nested the entire JSON structure as a string inside a single file
-      const fileKeys = Object.keys(parsed.files);
-      if (fileKeys.length === 1 && typeof parsed.files[fileKeys[0]] === "string") {
-        const innerContent = parsed.files[fileKeys[0]];
-        // Try to parse it as JSON
-        try {
-          const innerParsed = JSON.parse(innerContent);
-          if (innerParsed && typeof innerParsed === "object" && innerParsed.files && typeof innerParsed.files === "object") {
-            // Model double-nested — use the inner structure
-            return normalizeProject(innerParsed);
-          }
-        } catch {
-          // Not nested JSON, continue with outer structure
-        }
-      }
-      return normalizeProject(parsed);
-    }
-  } catch {
-    // If text has JSON with leading/trailing text, extract substring between first { and last }
-    const firstBrace = text.indexOf("{");
-    const lastBrace = text.lastIndexOf("}");
-    if (firstBrace !== -1 && lastBrace > firstBrace) {
-      try {
-        const substr = text.slice(firstBrace, lastBrace + 1);
-        const parsed = JSON.parse(substr);
-        if (parsed && typeof parsed === "object" && parsed.files && typeof parsed.files === "object") {
-          // Check for nested JSON pattern here too
-          const fileKeys = Object.keys(parsed.files);
-          if (fileKeys.length === 1 && typeof parsed.files[fileKeys[0]] === "string") {
-            try {
-              const innerParsed = JSON.parse(parsed.files[fileKeys[0]]);
-              if (innerParsed && typeof innerParsed === "object" && innerParsed.files && typeof innerParsed.files === "object") {
-                return normalizeProject(innerParsed);
-              }
-            } catch {
-              // Not nested, continue
-            }
-          }
-          return normalizeProject(parsed);
-        }
-      } catch {
-        // Fall through to custom parsing
-      }
-    }
-  }
-
-  // Fallback 1: Parse multi-file block markers (e.g. `// --- file: src/App.tsx ---`)
-  const fileMarkerRegex = /(?:\/\/\s*---|###|\/\*)\s*(?:file:)?\s*([a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+)\s*(?:---|---\*\/|\n)([\s\S]*?)(?=(?:\/\/\s*---|###|\/\*)\s*(?:file:)?\s*[a-zA-Z0-9_\-./]+\.[a-zA-Z0-9]+|$)/g;
-  const files: Record<string, string> = {};
-  let match;
-  while ((match = fileMarkerRegex.exec(text)) !== null) {
-    const filename = match[1].trim();
-    const content = match[2].trim().replace(/^```[a-zA-Z]*\n/, "").replace(/```$/, "").trim();
-    if (filename && content) {
-      files[filename] = content;
-    }
-  }
-
-  if (Object.keys(files).length > 0) {
-    return normalizeProject({
-      title: "React Application",
-      description: "Generated React application",
-      files,
-    });
-  }
-
-  // Fallback 2: If model returned single React component / JSX code
-  let cleanCode = text
-    .replace(/^```(?:tsx|jsx|typescript|javascript|html)?\n/i, "")
-    .replace(/```$/i, "")
-    .trim();
-
-  // If it returned an HTML file containing React babel script, extract it
-  const babelMatch = cleanCode.match(/<script type="text\/babel">([\s\S]*?)<\/script>/i);
-  if (babelMatch && babelMatch[1].trim().length > 0) {
-    cleanCode = babelMatch[1].trim();
-  }
-
-  return normalizeProject({
-    title: "React Application",
-    description: "Generated React application",
-    files: {
-      "src/App.tsx": cleanCode || `export default function App() { return <div className="p-8 text-center"><h1>React App</h1></div>; }`,
-    },
-  });
-}
-
-function normalizeProject(project: Partial<ReactProject>): ReactProject {
-  const files: Record<string, string> = {};
-  const rawFiles = project.files || {};
-
-  for (const [key, val] of Object.entries(rawFiles)) {
-    if (typeof val === "string") {
-      let normalizedKey = key.trim();
-      if (!normalizedKey.startsWith("src/") && !normalizedKey.includes("/")) {
-        normalizedKey = "src/" + normalizedKey;
-      }
-      files[normalizedKey] = val;
-    }
-  }
-
-  // Ensure App.tsx exists
-  const hasApp = Object.keys(files).some((f) =>
-    /src\/App\.(tsx|jsx|js|ts)$/i.test(f) || f === "App.tsx" || f === "App.jsx"
-  );
-
-  if (!hasApp && Object.keys(files).length > 0) {
-    const firstKey = Object.keys(files)[0];
-    files["src/App.tsx"] = files[firstKey];
-  } else if (Object.keys(files).length === 0) {
-    files["src/App.tsx"] = `import React from 'react';\nimport { Sparkles } from 'lucide-react';\n\nexport default function App() {\n  return (\n    <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-6">\n      <div className="text-center">\n        <Sparkles className="w-12 h-12 text-amber-400 mx-auto mb-4 animate-pulse" />\n        <h1 className="text-3xl font-bold">مرحبًا بك في تطبيق React</h1>\n      </div>\n    </div>\n  );\n}`;
-  }
-
-  return {
-    title: project.title || "React Project",
-    description: project.description || "Modern React & TypeScript application",
-    files,
-    entryFile: "src/App.tsx",
-  };
 }
