@@ -13,10 +13,23 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { decodeEvents } from "@/lib/stream-protocol";
 import { MODEL_INFO } from "@/lib/models";
 import { loadHistory, saveHistory } from "@/lib/history";
-import type { PreviewError, ReactProject, Version } from "@/lib/types";
+import type { GenerateErrorCode, PreviewError, ReactProject, Version } from "@/lib/types";
 
 /** Cap on automatic repair passes per version, to bound cost and looping. */
 const MAX_REPAIR_ATTEMPTS = 2;
+
+/** A pre-stream refusal, carrying the server's code so the UI can act on it. */
+class GenerateRequestError extends Error {
+  constructor(
+    message: string,
+    readonly code?: GenerateErrorCode,
+    /** Balance the server reported, when it refused for lack of it. */
+    readonly balanceCents?: number
+  ) {
+    super(message);
+    this.name = "GenerateRequestError";
+  }
+}
 
 function makeId(): string {
   return Math.random().toString(36).slice(2, 10);
@@ -38,6 +51,14 @@ export function useGeneration() {
   const [modelId, setModelId] = useState<string>(MODEL_INFO[0].id);
   const [isGenerating, setIsGenerating] = useState(false);
   const [hydrated, setHydrated] = useState(false);
+  /**
+   * Balance reported by the last run, or `null` before any run.
+   *
+   * The page renders the wallet from the server, which is authoritative but frozen
+   * at load. This is how the chip drops after a generation without a round trip:
+   * the server already knows the number, so it sends it with the result.
+   */
+  const [liveBalanceCents, setLiveBalanceCents] = useState<number | null>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   // Read inside async callbacks that must not close over a stale render.
@@ -127,13 +148,29 @@ export function useGeneration() {
           }),
         });
 
-        // Errors before the stream opens (rate limit, bad request) come back as JSON.
+        // Errors before the stream opens (rate limit, no credit, bad request) come
+        // back as JSON. The code travels with the message because the sidebar turns
+        // some of them into buttons — matching on translated prose would not survive
+        // a copy edit.
         if (!res.ok || !res.body) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data?.error || "حدث خطأ غير متوقع.");
+          const data = (await res.json().catch(() => ({}))) as {
+            error?: string;
+            code?: GenerateErrorCode;
+            balanceCents?: number;
+          };
+          // A refusal for lack of credit reports the balance it checked, which is
+          // fresher than whatever the page was rendered with.
+          if (typeof data.balanceCents === "number") {
+            setLiveBalanceCents(data.balanceCents);
+          }
+          throw new GenerateRequestError(
+            data.error || "حدث خطأ غير متوقع.",
+            data.code,
+            data.balanceCents
+          );
         }
 
-        const succeeded = await consumeStream(res.body, id, patch);
+        const succeeded = await consumeStream(res.body, id, patch, setLiveBalanceCents);
         if (!succeeded) selectLastGood(id);
       } catch (err) {
         if (err instanceof Error && err.name === "AbortError") {
@@ -151,6 +188,7 @@ export function useGeneration() {
             status: "error",
             streaming: undefined,
             errorMessage: err instanceof Error ? err.message : "خطأ غير متوقع",
+            errorCode: err instanceof GenerateRequestError ? err.code : undefined,
           });
           selectLastGood(id);
         }
@@ -205,6 +243,7 @@ export function useGeneration() {
     setModelId,
     isGenerating,
     hydrated,
+    liveBalanceCents,
     submit,
     cancel,
     repair,
@@ -221,7 +260,8 @@ export function useGeneration() {
 async function consumeStream(
   body: ReadableStream<Uint8Array>,
   id: string,
-  patch: (id: string, update: Partial<Version>) => void
+  patch: (id: string, update: Partial<Version>) => void,
+  onBalance: (balanceCents: number) => void
 ): Promise<boolean> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -287,6 +327,9 @@ async function consumeStream(
           case "error":
             settled = true;
             patch(id, { status: "error", streaming: undefined, errorMessage: event.error });
+            break;
+          case "balance":
+            onBalance(event.balanceCents);
             break;
         }
       }

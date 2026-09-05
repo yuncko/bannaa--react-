@@ -1,9 +1,18 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowForwardIcon, LogoMark, SparkleIcon } from "./Icons";
+import Link from "next/link";
+import { ArrowForwardIcon, GiftIcon, LogoMark, SparkleIcon } from "./Icons";
 import UserMenu from "./auth/UserMenu";
 import { MODEL_INFO } from "@/lib/models";
+import {
+  WELCOME_GRANT_CENTS,
+  balanceState,
+  formatMoney,
+  formatMoneyShort,
+  projectsAffordable,
+  type WalletView,
+} from "@/lib/billing";
 import type { AuthUser } from "@/lib/auth-user";
 
 const EXAMPLES = [
@@ -20,6 +29,7 @@ interface HeroProps {
   modelId: string;
   onModelChange: (modelId: string) => void;
   user: AuthUser | null;
+  wallet?: WalletView | null;
 }
 
 export default function Hero({
@@ -28,6 +38,7 @@ export default function Hero({
   modelId,
   onModelChange,
   user,
+  wallet = null,
 }: HeroProps) {
   const [value, setValue] = useState("");
 
@@ -36,6 +47,8 @@ export default function Hero({
     if (!trimmed || isGenerating) return;
     onSubmit(trimmed);
   }
+
+  const depleted = wallet !== null && balanceState(wallet.balanceCents) === "empty";
 
   return (
     <main className="relative flex min-h-dvh flex-col items-center justify-center overflow-hidden px-6 py-16">
@@ -46,14 +59,38 @@ export default function Hero({
       />
 
       <div className="absolute inset-x-0 top-0 z-20 flex justify-end px-5 py-4 sm:px-8">
-        <UserMenu user={user} />
+        <UserMenu user={user} wallet={wallet} />
       </div>
 
       <div className="relative z-10 flex w-full max-w-2xl flex-col items-center text-center animate-fade-up">
-        <div className="mb-7 flex items-center gap-2 rounded-full border border-border-subtle bg-bg-panel/60 px-4 py-1.5 text-xs text-ink-muted backdrop-blur">
-          <LogoMark className="h-5 w-5" />
-          <span>بنّاء — يبني تطبيقات React أمامك مباشرة</span>
-        </div>
+        {/* The offer, before the pitch. A visitor who has not signed up sees what
+            they get; a user who has run out sees the one thing that unblocks them. */}
+        {depleted ? (
+          <Link
+            href="/pricing"
+            className="mb-7 flex items-center gap-2 rounded-full border border-red-400/40 bg-red-500/10 px-4 py-1.5 text-xs font-semibold text-red-200 backdrop-blur transition-colors hover:border-red-400/70"
+          >
+            <span>نفد رصيدك — اختر خطة لمتابعة البناء</span>
+            <ArrowForwardIcon className="h-3.5 w-3.5" />
+          </Link>
+        ) : user ? (
+          <div className="mb-7 flex items-center gap-2 rounded-full border border-border-subtle bg-bg-panel/60 px-4 py-1.5 text-xs text-ink-muted backdrop-blur">
+            <LogoMark className="h-5 w-5" />
+            <span>بنّاء — يبني تطبيقات React أمامك مباشرة</span>
+          </div>
+        ) : (
+          <Link
+            href="/signup"
+            className="mb-7 flex items-center gap-2 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-4 py-1.5 text-xs font-semibold text-emerald-200 backdrop-blur transition-colors hover:border-emerald-400/60"
+          >
+            <GiftIcon className="h-4 w-4" />
+            <span>
+              رصيد <span className="dir-ltr inline-block">{formatMoneyShort(WELCOME_GRANT_CENTS)}</span>{" "}
+              مجانًا لكل حساب جديد — بلا بطاقة
+            </span>
+            <ArrowForwardIcon className="h-3.5 w-3.5" />
+          </Link>
+        )}
 
         <h1 className="text-4xl font-bold leading-[1.35] sm:text-5xl">
           صِف{" "}
@@ -141,6 +178,21 @@ export default function Hero({
             </button>
           ))}
         </div>
+
+        {/* What the balance means in projects, not cents. A number on its own tells
+            a user nothing about whether they can afford to start. */}
+        {wallet !== null && !depleted && (
+          <p className="mt-7 text-xs text-ink-faint">
+            رصيدك <span className="dir-ltr inline-block font-semibold text-ink-muted">{formatMoney(wallet.balanceCents)}</span>
+            {projectsAffordable(wallet.balanceCents) > 0 && (
+              <> — يكفي لنحو {projectsAffordable(wallet.balanceCents)} مشاريع كاملة</>
+            )}
+            {" · "}
+            <Link href="/pricing" className="text-accent transition-opacity hover:opacity-80">
+              الخطط
+            </Link>
+          </p>
+        )}
       </div>
     </main>
   );

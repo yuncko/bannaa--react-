@@ -2,20 +2,33 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getSessionUser } from "@/lib/supabase/server";
+import { getWallet } from "@/lib/credits";
 import { signOut } from "@/app/auth/actions";
 import {
+  SOLD_OUT_LABEL,
+  WELCOME_GRANT_CENTS,
+  balanceState,
+  formatMoney,
+  formatMoneyShort,
+  projectsAffordable,
+  type WalletView,
+} from "@/lib/billing";
+import { findPlan } from "@/lib/plans";
+import {
   CheckIcon,
+  GiftIcon,
   LockIcon,
   LogOutIcon,
   LogoMark,
   MailIcon,
   ShieldIcon,
   UserIcon,
+  WalletIcon,
 } from "@/components/Icons";
 
 export const metadata: Metadata = {
   title: "حسابي — بنّاء",
-  description: "إدارة حسابك في بنّاء.",
+  description: "إدارة حسابك ورصيدك في بنّاء.",
 };
 
 export default async function AccountPage({
@@ -30,6 +43,7 @@ export default async function AccountPage({
   // through. Cheap, and it removes the dependency on routing config.
   if (!user) redirect("/login?error=session_required&next=%2Faccount");
 
+  const wallet = await getWallet();
   const initial = (user.name ?? user.email ?? "?").trim().charAt(0).toUpperCase();
 
   return (
@@ -117,8 +131,120 @@ export default async function AccountPage({
             </Link>
           </div>
         </section>
+
+        {wallet && <BalanceCard wallet={wallet} />}
       </div>
     </main>
+  );
+}
+
+/**
+ * The balance, on the profile, with the depleted state called out.
+ *
+ * `SOLD OUT` replaces the number rather than sitting next to it: `$0.00` and a
+ * stamp saying the same thing twice is noise, and the stamp is the part that
+ * explains why nothing is generating.
+ */
+function BalanceCard({ wallet }: { wallet: WalletView }) {
+  const state = balanceState(wallet.balanceCents);
+  const plan = wallet.planId ? findPlan(wallet.planId) : undefined;
+  const projects = projectsAffordable(wallet.balanceCents);
+  // The sentinel from an unreadable wallet is a non-null string too, so this is
+  // "we know a grant happened" rather than "we could not tell".
+  const gifted = wallet.welcomeGrantedAt !== null && wallet.welcomeGrantedAt !== "unavailable";
+
+  return (
+    <section className="mt-6 rounded-3xl border border-border-subtle bg-bg-panel/60 p-6 shadow-2xl shadow-black/40 backdrop-blur sm:p-8">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="flex items-center gap-2 text-sm font-bold">
+            <WalletIcon className="h-4 w-4 text-accent" />
+            الرصيد
+          </h2>
+          <p className="mt-1.5 text-xs text-ink-faint">
+            {plan ? (
+              <>
+                خطة <span className="dir-ltr font-semibold text-ink-muted">{plan.name}</span>
+                {wallet.planRenewsAt && <> — تتجدّد تلقائيًا</>}
+              </>
+            ) : (
+              "لا توجد خطة نشطة — أنت على الرصيد الترحيبي"
+            )}
+          </p>
+        </div>
+
+        {state === "empty" ? (
+          <span className="dir-ltr flex-shrink-0 rounded-lg border border-red-400/40 bg-red-500/10 px-3 py-1.5 text-xs font-bold tracking-wider text-red-300">
+            {SOLD_OUT_LABEL}
+          </span>
+        ) : (
+          <span
+            className={`dir-ltr flex-shrink-0 text-3xl font-bold leading-none ${
+              state === "low" ? "text-amber-300" : "text-ink"
+            }`}
+          >
+            {formatMoney(wallet.balanceCents)}
+          </span>
+        )}
+      </div>
+
+      {/* A bar against the welcome grant, not against a plan: it is the yardstick
+          every account starts with, so the same drawing means the same thing to
+          everyone. It clamps rather than overflowing on a topped-up balance. */}
+      <div className="mt-5 h-1.5 overflow-hidden rounded-full bg-bg-panel-soft">
+        <div
+          className={`h-full rounded-full transition-all ${
+            state === "empty"
+              ? "bg-red-400/60"
+              : state === "low"
+                ? "bg-amber-400"
+                : "bg-gradient-to-l from-accent to-accent-soft"
+          }`}
+          style={{
+            width: `${Math.min(100, Math.max(2, (wallet.balanceCents / WELCOME_GRANT_CENTS) * 100))}%`,
+          }}
+        />
+      </div>
+
+      {state === "empty" ? (
+        <>
+          <p className="mt-4 text-xs leading-relaxed text-ink-muted">
+            نفد رصيدك، ولا يمكن بدء طلبات جديدة حتى تشترك. كل مشاريعك السابقة محفوظة
+            ولن تفقد شيئًا.
+          </p>
+          <Link
+            href="/pricing"
+            className="mt-4 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-l from-accent to-accent-deep px-5 py-2.5 text-sm font-semibold text-white shadow-lg shadow-accent/20 transition-shadow hover:shadow-accent/40"
+          >
+            <WalletIcon className="h-4 w-4" />
+            اشترك لمتابعة البناء
+          </Link>
+        </>
+      ) : (
+        <>
+          <p className="mt-4 text-xs leading-relaxed text-ink-muted">
+            {projects > 0
+              ? `يكفي لنحو ${projects} مشاريع كاملة على النموذج الأقوى.`
+              : "يكفي لتعديلات قليلة — يُنصح بالاشتراك قبل أن ينفد."}
+          </p>
+          {gifted && !plan && (
+            <p className="mt-2 flex items-center gap-1.5 text-[11px] text-emerald-300/80">
+              <GiftIcon className="h-3.5 w-3.5" />
+              حصلت على{" "}
+              <span className="dir-ltr">{formatMoneyShort(WELCOME_GRANT_CENTS)}</span> رصيدًا
+              ترحيبيًا مجانيًا
+            </p>
+          )}
+          <Link
+            href="/pricing"
+            className="mt-4 flex items-center justify-center gap-2 rounded-xl border border-border-strong bg-bg-panel/70 px-5 py-2.5 text-sm font-semibold transition-colors hover:border-accent/40"
+          >
+            <WalletIcon className="h-4 w-4 text-accent" />
+            {plan ? "إدارة الخطة" : "استعرض الخطط"}
+          </Link>
+        </>
+      )}
+    </section>
   );
 }
 

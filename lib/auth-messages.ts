@@ -8,6 +8,10 @@
  * echoing raw provider text, which can carry internal detail.
  */
 
+// The explicit extension keeps this module runnable under Node's type stripping,
+// which `npm test` uses — ESM there has no extensionless resolution.
+import { PRIMARY_EMAIL_DOMAIN, describeEmailPolicy } from "./email-policy.ts";
+
 /** Errors surfaced through a `?error=` query parameter on `/login`. */
 export const REDIRECT_ERRORS: Record<string, string> = {
   oauth_failed: "تعذّر إكمال تسجيل الدخول عبر المزوّد. حاول مرة أخرى.",
@@ -17,6 +21,7 @@ export const REDIRECT_ERRORS: Record<string, string> = {
   link_expired: "انتهت صلاحية الرابط أو استُخدم من قبل. اطلب رابطًا جديدًا.",
   session_required: "هذه الصفحة تتطلّب تسجيل الدخول أولًا.",
   not_configured: "لم يُضبط Supabase على هذا الخادم، تسجيل الدخول غير متاح حاليًا.",
+  email_not_allowed: `نقبل حاليًا عناوين ${PRIMARY_EMAIL_DOMAIN}@ فقط. سجّل الدخول بحساب Google أو ببريد Gmail.`,
 };
 
 /** Supabase `AuthError.code` → user-facing Arabic. */
@@ -94,6 +99,12 @@ export function validateSignUp(input: {
 
   if (!input.email.trim()) errors.email = "أدخل بريدك الإلكتروني.";
   else if (!isValidEmail(input.email.trim())) errors.email = "صيغة البريد غير صحيحة.";
+  else {
+    // Gmail-only. The welcome credit makes a throwaway inbox worth money, so the
+    // domain is part of validation rather than an anti-spam afterthought.
+    const policy = describeEmailPolicy(input.email.trim());
+    if (policy) errors.email = policy;
+  }
 
   if (!input.password) errors.password = "أدخل كلمة مرور.";
   else if (input.password.length < MIN_PASSWORD_LENGTH) {
@@ -110,11 +121,23 @@ export function validateSignUp(input: {
   return errors;
 }
 
-/** Validates the sign-in form: presence only, so a changed policy can't lock users out. */
+/**
+ * Validates the sign-in form.
+ *
+ * Presence plus the domain policy. Checking the domain here is a real trade-off:
+ * it means an account created outside this form — by an admin, or before the
+ * policy existed — cannot sign in. That is the intent ("won't be accepted and
+ * won't be able to log in"), and it is enforced here so the message is a clear
+ * explanation rather than Supabase's generic "invalid credentials".
+ */
 export function validateSignIn(input: { email: string; password: string }): FieldErrors {
   const errors: FieldErrors = {};
   if (!input.email.trim()) errors.email = "أدخل بريدك الإلكتروني.";
   else if (!isValidEmail(input.email.trim())) errors.email = "صيغة البريد غير صحيحة.";
+  else {
+    const policy = describeEmailPolicy(input.email.trim());
+    if (policy) errors.email = policy;
+  }
   if (!input.password) errors.password = "أدخل كلمة المرور.";
   return errors;
 }

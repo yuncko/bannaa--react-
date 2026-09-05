@@ -46,14 +46,53 @@ export interface StreamErrorEvent {
   retryable?: boolean;
 }
 
+/**
+ * Balance after this run was charged.
+ *
+ * Emitted with the charge rather than left to a refetch so the header cannot show
+ * a stale number next to a project the user just paid for.
+ */
+export interface StreamBalanceEvent {
+  type: "balance";
+  balanceCents: number;
+  /** What this run cost, for the "-$0.45" flourish. */
+  chargedCents: number;
+}
+
 export type StreamEvent =
   | StreamMetaEvent
   | StreamFileEvent
   | StreamTitleEvent
   | StreamDoneEvent
-  | StreamErrorEvent;
+  | StreamErrorEvent
+  | StreamBalanceEvent;
 
 export const STREAM_CONTENT_TYPE = "application/x-ndjson; charset=utf-8";
+
+/**
+ * Machine-readable reason for a failure that happens *before* the stream opens.
+ *
+ * Once a byte of the stream is written the status is already 200, so anything
+ * fatal after that arrives as a `StreamErrorEvent` instead. These codes exist
+ * because the UI reacts differently to each: "sign in" and "top up" are buttons,
+ * not sentences.
+ */
+export type GenerateErrorCode =
+  | "rate_limited"
+  | "invalid_request"
+  | "auth_required"
+  | "insufficient_credits"
+  | "billing_unavailable"
+  | "provider_error";
+
+/** JSON body of a pre-stream failure. `error` is always shown; the rest is optional context. */
+export interface GenerateErrorBody {
+  error: string;
+  code: GenerateErrorCode;
+  /** Present on `insufficient_credits`, so the UI can say how short the user is. */
+  balanceCents?: number;
+  requiredCents?: number;
+}
 
 export function encodeEvent(event: StreamEvent): string {
   return JSON.stringify(event) + "\n";

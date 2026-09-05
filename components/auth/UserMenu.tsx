@@ -12,15 +12,24 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { signOut } from "@/app/auth/actions";
 import { userInitial, userLabel, type AuthUser } from "@/lib/auth-user";
-import { LockIcon, LogOutIcon, UserIcon } from "@/components/Icons";
+import {
+  SOLD_OUT_LABEL,
+  balanceState,
+  formatMoney,
+  type WalletView,
+} from "@/lib/billing";
+import { LockIcon, LogOutIcon, UserIcon, WalletIcon } from "@/components/Icons";
+import BalancePill from "@/components/billing/BalancePill";
 
 interface UserMenuProps {
   user: AuthUser | null;
+  /** Null when Supabase is unconfigured or the wallet could not be read. */
+  wallet?: WalletView | null;
   /** `compact` drops the name, for the narrow sidebar header. */
   variant?: "default" | "compact";
 }
 
-export default function UserMenu({ user, variant = "default" }: UserMenuProps) {
+export default function UserMenu({ user, wallet = null, variant = "default" }: UserMenuProps) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -64,7 +73,11 @@ export default function UserMenu({ user, variant = "default" }: UserMenuProps) {
   }
 
   return (
-    <div ref={rootRef} className="relative">
+    <div ref={rootRef} className="relative flex items-center gap-2">
+      {/* Outside the dropdown on purpose: a balance you have to open a menu to see
+          is a balance that runs out by surprise. */}
+      {wallet && <BalancePill balanceCents={wallet.balanceCents} />}
+
       <button
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
@@ -94,8 +107,13 @@ export default function UserMenu({ user, variant = "default" }: UserMenuProps) {
             </div>
           </div>
 
+          {wallet && <WalletRow wallet={wallet} />}
+
           <MenuLink href="/account" icon={<UserIcon className="h-3.5 w-3.5" />}>
             حسابي
+          </MenuLink>
+          <MenuLink href="/pricing" icon={<WalletIcon className="h-3.5 w-3.5" />}>
+            الخطط والرصيد
           </MenuLink>
           <MenuLink href="/account/password" icon={<LockIcon className="h-3.5 w-3.5" />}>
             تغيير كلمة المرور
@@ -112,6 +130,41 @@ export default function UserMenu({ user, variant = "default" }: UserMenuProps) {
             </button>
           </form>
         </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Balance line inside the dropdown.
+ *
+ * Repeats the number the pill already shows, because the pill is a glance and this
+ * is the place that says what to do about it.
+ */
+function WalletRow({ wallet }: { wallet: WalletView }) {
+  const empty = balanceState(wallet.balanceCents) === "empty";
+
+  return (
+    <div className="border-b border-border-subtle px-3 py-2.5">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[11px] text-ink-faint">الرصيد المتاح</span>
+        {empty ? (
+          <span className="dir-ltr rounded-md bg-red-500/15 px-1.5 py-0.5 text-[10px] font-bold tracking-wide text-red-300">
+            {SOLD_OUT_LABEL}
+          </span>
+        ) : (
+          <span className="dir-ltr text-xs font-bold text-ink">
+            {formatMoney(wallet.balanceCents)}
+          </span>
+        )}
+      </div>
+      {empty && (
+        <Link
+          href="/pricing"
+          className="mt-2 block rounded-lg bg-gradient-to-l from-accent to-accent-deep px-2.5 py-1.5 text-center text-[11px] font-bold text-white transition-opacity hover:opacity-90"
+        >
+          اشترك لمتابعة البناء
+        </Link>
       )}
     </div>
   );
